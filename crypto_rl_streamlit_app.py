@@ -1,58 +1,52 @@
-
-# crypto_rl_streamlit_app.py
-
-# ========================
-# 📦 Import Libraries
-# ========================
 import streamlit as st
 import pandas as pd
-import requests
 import numpy as np
+import requests
 import ta
 import plotly.graph_objs as go
-import gym
-from gym.spaces import Box, Discrete
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
+from gymnasium import Env
+from gymnasium.spaces import Discrete, Box
 
-# ========================
-# 🔧 Helper Function: Fetch Historical Data
-# ========================
-def fetch_history(symbol="BTC/USD", interval="1min", api_key="YOUR_API_KEY_HERE"):
+# 🎯 Mapping action index to label
+ACTION_LABELS = {0: "Sell", 1: "Hold", 2: "Buy"}
+
+# 📈 Fetch historical market data and compute technical indicators
+def fetch_history(symbol="BTC/USD", interval="1min", api_key="76d8f8e054464b98bb0228deb84f19b0"):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=500&apikey={api_key}"
     response = requests.get(url).json()
     if "values" not in response:
-        st.error("API Error: Check symbol or API key.")
-        return None
+        raise ValueError(f"Error fetching data: {response}")
     df = pd.DataFrame(response["values"])
     df = df.rename(columns={"datetime": "ts"})
     for col in ["open", "high", "low", "close"]:
-        df[col] = df[col].astype(float)
-    df["vol"] = df["volume"].astype(float) if "volume" in df.columns else 0.0
+        if col in df.columns:
+            df[col] = df[col].astype(float)
+        else:
+            raise KeyError(f"Missing column: {col}")
+    df['vol'] = df.get('volume', 0.0).astype(float)
     df["ts"] = pd.to_datetime(df["ts"])
     df = df.sort_values("ts")
     df["rsi"] = ta.momentum.rsi(df["close"], window=14)
     df["macd"] = ta.trend.macd_diff(df["close"])
     return df.dropna()
 
-# ========================
-# 🧠 Custom Gym Environment
-# ========================
-class CryptoEnv(gym.Env):
+# 🧠 Custom RL environment
+class CryptoEnv(Env):
     def __init__(self, df):
-        super(CryptoEnv, self).__init__()
         self.df = df.reset_index()
         self.n = len(df)
         self.ptr = 0
         self.action_space = Discrete(3)
         self.observation_space = Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32)
-        self.balance = 1000.0
+        self.balance = 1_000
         self.crypto = 0.0
 
-    def reset(self):
+    def reset(self, seed=None, options=None):
         self.ptr = 0
-        self.balance, self.crypto = 1000.0, 0.0
-        return self._get_observation()
+        self.balance, self.crypto = 1000, 0
+        return self._get_observation(), {}
 
     def _get_observation(self):
         row = self.df.loc[self.ptr]
@@ -60,75 +54,55 @@ class CryptoEnv(gym.Env):
 
     def step(self, action):
         price = self.df.loc[self.ptr, 'close']
-        if action == 2:  # Buy
+        if action == 2:
             self.crypto += self.balance / price
             self.balance = 0
-        elif action == 0:  # Sell
+        elif action == 0:
             self.balance += self.crypto * price
             self.crypto = 0
         self.ptr += 1
         done = self.ptr >= self.n - 1
         net = self.balance + self.crypto * price
         reward = net - 1000
-        return self._get_observation(), reward, done, {}
+        return self._get_observation(), reward, done, False, {}
 
-# ========================
-# 🎯 Action Mapping
-# ========================
-ACTION_LABELS = {0: "Sell", 1: "Hold", 2: "Buy"}
-
-# ========================
-# 🚀 Streamlit App UI
-# ========================
-st.set_page_config(layout="wide", page_title="Crypto RL Agent")
-st.title("📈 Crypto Price Momentum Strategy (Reinforcement Learning)")
-
-# Sidebar - Explanation
-st.sidebar.header("📚 About This App")
+# 🔧 Sidebar with Info
+st.sidebar.title("ℹ️ About")
 st.sidebar.markdown("""
 **What is Cryptocurrency?**
-Cryptocurrency is a digital or virtual form of money based on blockchain technology.
+Digital or virtual currency secured by cryptography, mainly used for trading, investing.
 
-**What is a Crypto Momentum Strategy?**
-A trading strategy that leverages indicators like RSI and MACD to ride on short-term trends.
+**Momentum Strategy**
+It uses RSI (Relative Strength Index) and MACD (Moving Average Convergence Divergence) to detect trends.
 
-**Key Terms**
-- **RSI**: Measures overbought or oversold conditions.
-- **MACD**: Indicates momentum and trend direction.
-- **PPO Agent**: A Reinforcement Learning model that learns to maximize profit.
+**Actions**
+- 🟥 Sell
+- ⏸ Hold
+- 🟩 Buy
 """)
 
-# Sidebar - Symbol selection and API key input
-api_key = st.sidebar.text_input("🔑 Enter TwelveData API Key", type="password")
-symbol = st.sidebar.selectbox("💱 Select Trading Pair", ["BTC/USD", "ETH/USD", "ADA/USD"])
+# 🧪 Interface
+st.title("📊 Crypto Momentum Strategy using Reinforcement Learning")
+symbol = st.selectbox("Select Trading Pair", ["BTC/USD", "ETH/USD", "ADA/USD"])
 
-# Fetch & visualize
-if api_key:
-    df = fetch_history(symbol, api_key=api_key)
-    if df is not None:
-        # PPO Training (short episode for demo)
-        env = DummyVecEnv([lambda: CryptoEnv(df)])
-        model = PPO("MlpPolicy", env, verbose=0)
-        model.learn(total_timesteps=10000)
+# 🚀 Fetch & train model
+df = fetch_history(symbol=symbol)
+env = DummyVecEnv([lambda: CryptoEnv(df)])
+model = PPO("MlpPolicy", env, verbose=0)
+model.learn(total_timesteps=10000)
 
-        # Latest data input for prediction
-        latest = df.iloc[-1]
-        obs = np.array([[latest.rsi, latest.macd, latest.close]], dtype=np.float32)
-        action, _ = model.predict(obs)
-        action_label = ACTION_LABELS[int(action)]
+# 🧠 Make prediction
+latest = df.iloc[-1]
+obs = np.array([[latest.rsi, latest.macd, latest.close]], dtype=np.float32)
+action, _ = model.predict(obs)
+action_label = ACTION_LABELS[int(action)]
 
-        # Price chart
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df["ts"], y=df["close"], mode='lines', name="Close Price"))
-        fig.update_layout(title=f"{symbol} Price Chart", xaxis_title="Timestamp", yaxis_title="Price (USD)")
+# 📈 Plot chart
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=df["ts"], y=df["close"], mode='lines', name='Close Price'))
+fig.update_layout(title=f"{symbol} Price Chart", xaxis_title="Time", yaxis_title="USD", height=400)
 
-        # Show predictions and chart
-        st.subheader("📊 Market Indicators")
-        st.metric("RSI", f"{latest.rsi:.2f}")
-        st.metric("MACD", f"{latest.macd:.4f}")
-        st.metric("Price", f"${latest.close:.2f}")
-        st.success(f"🤖 RL Agent Action: **{action_label}**")
-
-        st.plotly_chart(fig, use_container_width=True)
-else:
-    st.warning("Please enter your API key in the sidebar to begin.")
+# 📢 Output
+st.plotly_chart(fig, use_container_width=True)
+st.subheader("📬 Agent Decision:")
+st.success(f"The agent recommends: **{action_label}**")
