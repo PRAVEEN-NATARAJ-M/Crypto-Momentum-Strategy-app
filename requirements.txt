@@ -1,0 +1,9 @@
+
+streamlit
+ta
+pandas
+numpy
+requests
+plotly
+gym
+stable-baselines3
