@@ -1,0 +1,9 @@
+
+streamlit
+ta
+pandas
+numpy
+requests
+plotly
+gym==0.21.0
+stable-baselines3==1.6.2
